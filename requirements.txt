@@ -1,0 +1,12 @@
+flask
+yt-dlp
+openai-whisper
+sentence-transformers
+faiss-cpu
+moviepy
+transformers
+torch
+python-dotenv
+accelerate
+gTTS
+youtube-transcript-api

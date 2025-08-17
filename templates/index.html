@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Video Supercut Generator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>AI Video Supercut Generator</h1>
+        <p>Enter a YouTube URL and a query to generate a custom video summary.</p>
+        
+        <form id="process-form">
+            <input type="text" id="youtube_url" name="youtube_url" placeholder="Enter YouTube URL" required>
+            <input type="text" id="query" name="query" placeholder="What do you want to see? (e.g., 'moments about AI safety')" required>
+            <div class="checkbox-container">
+                <input type="checkbox" id="with_narration" name="with_narration">
+                <label for="with_narration">Add AI Narration</label>
+            </div>
+            <button type="submit">Generate Supercut</button>
+        </form>
+
+        <div id="status-container" style="display:none;">
+            <h2>Processing...</h2>
+            <div class="progress-bar">
+                <div id="progress-bar-inner"></div>
+            </div>
+            <p id="status-message"></p>
+        </div>
+
+        <div id="result-container" style="display:none;">
+            <h2>Your Supercut is Ready!</h2>
+            <a id="result-link" href="#" target="_blank">View Your Video</a>
+        </div>
+
+        <div id="error-container" style="display:none;">
+            <h2>An Error Occurred</h2>
+            <p id="error-message"></p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

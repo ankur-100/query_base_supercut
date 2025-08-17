@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Supercut</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Your Supercut is Ready!</h1>
+        <video controls autoplay muted playsinline width="100%">
+            <source src="{{ url_for('serve_video', filename=filename) }}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+        <br>
+        <a href="/">Create another one</a>
+    </div>
+
+    <!-- Q&A Bot Section -->
+    <div class="container qa-container">
+        <h2>Ask a Question About This Video</h2>
+        <form id="qa-form">
+            <input type="hidden" id="job_id" value="{{ job_id }}">
+            <input type="text" id="qa-question" placeholder="Ask anything..." required>
+            <button type="submit">Ask</button>
+        </form>
+        <div id="qa-spinner" style="display:none;">
+            <div class="spinner"></div>
+        </div>
+        <div id="qa-answer-box" style="display:none;">
+            <h4>Answer:</h4>
+            <p id="qa-answer"></p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
