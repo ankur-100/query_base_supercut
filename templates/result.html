@@ -4,36 +4,66 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Your Supercut</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Your Supercut is Ready!</h1>
-        <video controls autoplay muted playsinline width="100%">
-            <source src="{{ url_for('serve_video', filename=filename) }}" type="video/mp4">
-            Your browser does not support the video tag.
-        </video>
-        <br>
-        <a href="/">Create another one</a>
+    <div class="main-container">
+        <header>
+             <h1>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M14.5 4.5L21.5 8.5V15.5L14.5 19.5L7.5 15.5V8.5L14.5 4.5Z" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2.5 12.5L7.5 15.5L14.5 19.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M7.5 8.5L2.5 12.5L7.5 8.5Z" fill="white"/>
+                    <path d="M7.5 8.5L2.5 12.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Your Supercut is Ready
+            </h1>
+        </header>
+
+        <main class="result-main">
+            <div class="result-content card">
+                <div id="player-container">
+                    <div id="player"></div>
+                </div>
+                
+                <div id="narration-player-container" style="display: none;">
+                    <h3>AI Narration</h3>
+                    <audio id="narration-player" controls></audio>
+                </div>
+
+                <div id="narrative-display">
+                    <h3>Narrative Segments</h3>
+                    <ul id="playlist-list"></ul>
+                </div>
+            </div>
+
+            <div class="qa-container card">
+                <h2>Ask a Question About This Video</h2>
+                <form id="qa-form">
+                    <input type="hidden" id="job_id" value="{{ job_id }}">
+                    <div class="input-wrapper">
+                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M21 21L16.65 16.65M19 11C19 15.4183 15.4183 19 11 19C6.58172 19 3 15.4183 3 11C3 6.58172 6.58172 3 11 3C15.4183 3 19 6.58172 19 11Z" stroke="#9CA3AF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <input type="text" id="qa-question" placeholder="Ask anything..." required>
+                    </div>
+                    <button type="submit" class="gradient-button">Ask</button>
+                </form>
+                <div id="qa-spinner" style="display:none;"><div class="spinner"></div></div>
+                <div id="qa-answer-box" style="display:none;">
+                    <h4>Answer:</h4>
+                    <p id="qa-answer"></p>
+                </div>
+            </div>
+        </main>
+         <a href="/" class="back-link">Create another one</a>
     </div>
 
-    <!-- Q&A Bot Section -->
-    <div class="container qa-container">
-        <h2>Ask a Question About This Video</h2>
-        <form id="qa-form">
-            <input type="hidden" id="job_id" value="{{ job_id }}">
-            <input type="text" id="qa-question" placeholder="Ask anything..." required>
-            <button type="submit">Ask</button>
-        </form>
-        <div id="qa-spinner" style="display:none;">
-            <div class="spinner"></div>
-        </div>
-        <div id="qa-answer-box" style="display:none;">
-            <h4>Answer:</h4>
-            <p id="qa-answer"></p>
-        </div>
-    </div>
-
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        const resultData = JSON.parse('{{ result_data | safe }}');
+    </script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="/static/script.js"></script>
 </body>
 </html>

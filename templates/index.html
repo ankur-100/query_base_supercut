@@ -1,45 +1,96 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Video Supercut Generator</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>AI Video Supercut Generator</h1>
-        <p>Enter a YouTube URL and a query to generate a custom video summary.</p>
-        
-        <form id="process-form">
-            <input type="text" id="youtube_url" name="youtube_url" placeholder="Enter YouTube URL" required>
-            <input type="text" id="query" name="query" placeholder="What do you want to see? (e.g., 'moments about AI safety')" required>
-            <div class="checkbox-container">
-                <input type="checkbox" id="with_narration" name="with_narration">
-                <label for="with_narration">Add AI Narration</label>
+    <div class="main-container">
+        <header>
+            <h1>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M14.5 4.5L21.5 8.5V15.5L14.5 19.5L7.5 15.5V8.5L14.5 4.5Z" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2.5 12.5L7.5 15.5L14.5 19.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M7.5 8.5L2.5 12.5L7.5 8.5Z" fill="white"/>
+                    <path d="M7.5 8.5L2.5 12.5" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                AI Video Supercut Generator
+            </h1>
+            <p>Transform any YouTube video into personalized supercuts with AI-powered precision. Enter a URL and describe what you want to see.</p>
+        </header>
+
+        <main>
+            <form id="process-form" class="card">
+                <div class="form-group">
+                    <label for="youtube_url">YouTube URL</label>
+                    <div class="input-wrapper">
+                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="#9CA3AF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 12L10.5 9V15L15.5 12Z" stroke="#9CA3AF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <input type="text" id="youtube_url" name="youtube_url" placeholder="https://youtube.com/watch?v=..." required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="query">What do you want to see?</label>
+                    <div class="input-wrapper">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M21 21L16.65 16.65M19 11C19 15.4183 15.4183 19 11 19C6.58172 19 3 15.4183 3 11C3 6.58172 6.58172 3 11 3C15.4183 3 19 6.58172 19 11Z" stroke="#9CA3AF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <input type="text" id="query" name="query" placeholder="e.g., 'a 5-minute summary of AI safety moments'" required>
+                    </div>
+                </div>
+                <div class="form-group checkbox-group">
+                    <input type="checkbox" id="with_narration" name="with_narration" value="true">
+                    <label for="with_narration">Add AI Narration</label>
+                    <span>Generate voice over commentary for your supercut.</span>
+                </div>
+                
+                <button type="submit" class="gradient-button">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.6201 15.75L14.8701 11.5L10.6201 7.25" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Generate Supercut
+                </button>
+            </form>
+
+            <div id="status-container" class="card" style="display:none;">
+                <h2 id="status-title">Processing...</h2>
+                <div class="progress-bar">
+                    <div id="progress-bar-inner"></div>
+                </div>
+                <p id="status-message"></p>
             </div>
-            <button type="submit">Generate Supercut</button>
-        </form>
 
-        <div id="status-container" style="display:none;">
-            <h2>Processing...</h2>
-            <div class="progress-bar">
-                <div id="progress-bar-inner"></div>
+            <div id="error-container" class="card" style="display:none;">
+                <h2 id="error-title">An Error Occurred</h2>
+                <p id="error-message"></p>
             </div>
-            <p id="status-message"></p>
-        </div>
 
-        <div id="result-container" style="display:none;">
-            <h2>Your Supercut is Ready!</h2>
-            <a id="result-link" href="#" target="_blank">View Your Video</a>
-        </div>
-
-        <div id="error-container" style="display:none;">
-            <h2>An Error Occurred</h2>
-            <p id="error-message"></p>
-        </div>
+            <section class="features">
+                <div class="feature-item">
+                    <div class="icon-bg">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 12H20M12 4V20" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <h3>Smart Editing</h3>
+                    <p>AI analyzes video content to find the perfect moments.</p>
+                </div>
+                <div class="feature-item">
+                     <div class="icon-bg">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 21L15.5 17.5M12 21L8.5 17.5M12 21V3M12 3L15.5 6.5M12 3L8.5 6.5" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <h3>Custom Queries</h3>
+                    <p>Describe exactly what you want to see in natural language.</p>
+                </div>
+                <div class="feature-item">
+                     <div class="icon-bg">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 12L10.5 9V15L15.5 12Z" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <h3>YouTube Ready</h3>
+                    <p>Works with any public YouTube video instantly.</p>
+                </div>
+            </section>
+        </main>
     </div>
-
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="/static/script.js"></script>
 </body>
 </html>

@@ -5,14 +5,19 @@
     "version": "0.2.0",
     "configurations": [
         
+
+        
         {
-            "name": "Python Debugger: Remote Attach",
+            "name": "FastAPI: Uvicorn",
             "type": "debugpy",
-            "request": "attach",
-            "connect": {
-                "host": "localhost",
-                "port": 1235
-            },
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                    "main:app", // Replace 'main:app' with your actual module and FastAPI instance
+                    "--reload",
+                    "--host", "0.0.0.0",
+                    "--port", "8000"
+                ],
             "pathMappings": [
                 {
                     "localRoot": "${workspaceFolder}",
