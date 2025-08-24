@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
 # Import the core processing functions
-from video_processor import process_transcript_pipeline, answer_question_from_video
+from video_processor import process_audio_pipeline, answer_question_from_video
 
 # --- App Initialization ---
 app = FastAPI()
@@ -52,7 +52,7 @@ async def create_processing_job(
     job_id = str(uuid.uuid4())
     jobs[job_id] = {'status': 'queued', 'progress': 0, 'message': 'Job is queued...'}
 
-    background_tasks.add_task(process_transcript_pipeline, youtube_url, query, job_id, jobs, with_narration)
+    background_tasks.add_task(process_audio_pipeline, youtube_url, query, job_id, jobs, with_narration)
 
     return JSONResponse(content={'job_id': job_id})
 

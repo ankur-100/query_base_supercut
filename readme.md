@@ -1,19 +1,37 @@
 ## 
-## 🚀 AI Video Supercut Generator (FastAPI v1.2 - UI Update) 🚀
+## 🚀 AI Video Supercut Generator (FastAPI v2.0) 🚀
 ##
-## This project is a complete codebase for the AI Video Supercut Generator,
-## now featuring a fully redesigned, modern user interface.
+## This project is a complete codebase for the AI Video Supercut Generator.
 ##
-## VERSION UPGRADE:
-## - UI OVERHAUL: Replaced the basic HTML and CSS with a professional, dark-themed
-##   design based on the provided UI mockup. This includes new layouts, color schemes,
-##   gradient effects, and custom icons.
-## - HTML STRUCTURE: Refactored `index.html` and `result.html` to support the new design.
-## - CSS REWRITE: Completely rewrote `style.css` to implement the new aesthetic.
+## VERSION UPGRADE (v2.0):
+## - MAJOR ARCHITECTURAL SHIFT: The application now uses an "audio-first" pipeline. It
+##   downloads the audio, performs speaker diarization, and then runs high-accuracy
+##   transcription to create a rich, speaker-labeled source of truth.
+## - SPEAKER DIARIZATION: Integrated `pyannote.audio` to identify who spoke when.
+## - HIGH-ACCURACY TRANSCRIPTION: Upgraded to `WhisperX` for more precise word-level timestamps.
+## - ADVANCED NARRATIVE ENGINE: Implemented the "Diversity Ranking" strategy. The system
+##   now selects clips based on a combined score of relevance and informational uniqueness.
+## - UI UPDATE: The results page now displays the speaker label for each segment.
 ##
 ## ==============================================================================
 ## FILE: README.md
 ## ==============================================================================
+
+# AI Video Supercut Generator (FastAPI v2.0)
+
+This project provides a complete, extensive codebase for an AI-powered application that generates "supercuts" from long-form videos. This version represents a major architectural overhaul to an "audio-first" pipeline, incorporating speaker diarization and a more advanced narrative engine for significantly higher quality results.
+
+### Core Architecture (v2.0)
+
+1.  **Audio-First Pipeline:** The system no longer relies on YouTube's captions. For every video, it downloads the audio track and processes it through a new, high-accuracy pipeline:
+    * **Speaker Diarization:** Uses `pyannote.audio` to identify *who* spoke and *when*, creating a timeline of speaker turns.
+    * **Transcription & Alignment:** Uses `WhisperX` to generate a highly accurate transcript with word-level timestamps. It then aligns these words with the speaker timeline to produce an enriched transcript where every word has a speaker label.
+2.  **Advanced Narrative Engine:**
+    * **Broad Retrieval:** The system performs a semantic search to retrieve a large set of potentially relevant clips.
+    * **Narrative Reason Generation:** An LLM generates a one-sentence summary (`narrative_reason`) for each of these clips.
+    * **Diversity Ranking:** The system calculates a "diversity score" for each clip by comparing its summary to all others, prioritizing clips that introduce new ideas.
+    * **Knapsack Selection:** An optimization algorithm selects the best combination of clips that maximizes both **relevance and diversity** within a time budget inferred from the user's query.
+3.  **Frontend Video Synthesis:** The final playlist, now with speaker labels, is sent to the frontend, which uses the YouTube IFrame Player API to create the supercut.
 
 # AI Video Supercut Generator (FastAPI v1.2 - UI Update)
 
@@ -77,11 +95,13 @@ This section documents the major architectural and feature milestones of the pro
 **v1.0 (Flask): Core Supercut Generator**
 * **Architecture:** Initial version built on the Flask web framework. Used a backend-heavy approach where the server performed all tasks.
 * **Workflow:**
-    1.  Downloaded the full video file using `yt-dlp`.
-    2.  Transcribed audio using `Whisper`.
-    3.  Performed semantic search on the transcript to find relevant clips.
-    4.  Used a `Flan-T5` LLM as a "Narrative Engine" to create a script.
-    5.  Rendered a new MP4 video file on the server using `MoviePy`.
+* This initial version established the core backend-heavy architecture. It downloaded the full video, transcribed it, generated a script, and rendered a new MP4 file on the server.
+* **Video Ingestion:** Downloads the video from a given YouTube URL using yt-dlp.
+* **Transcription:** Uses OpenAI's Whisper to generate a highly accurate transcript.
+* **Semantic Search:** Uses a FAISS index to find the most semantically relevant clips.
+* **Narrative Engine:** A powerful LLM selects, reorders, and trims clips to construct a logical narrative.
+* **Video Synthesis:** Uses MoviePy to programmatically cut and stitch segments into the final supercut.
+
 * **Key Challenge:** The process was very slow and resource-intensive due to the full video download and rendering steps.
 
 **v2.0 (Flask): AI Narration & Q&A Bot**
@@ -121,3 +141,10 @@ This section documents the major architectural and feature milestones of the pro
     * Restructured `templates/index.html` and `templates/result.html` with new HTML elements and classes to match the design.
     * Added inline SVG icons for a cleaner look and faster loading.
 * **Current Version:** This represents the most modern, efficient, and visually polished version of the application.
+
+**v1.1 - v1.8 (FastAPI): Framework Migration & Incremental Refinements**
+* **Framework Migration:** The entire application was refactored from Flask to FastAPI for better performance and async capabilities.
+* **UI Overhaul:** The frontend was completely redesigned with a modern, dark-themed UI.
+* **Intelligent Query Handling:** Introduced logic to extract a desired duration from the user's query and to "clean" the query for more accurate semantic search.
+* **Model Upgrades:** Progressively updated the core LLM through various versions of Gemma.
+

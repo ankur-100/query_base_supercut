@@ -3,6 +3,8 @@ uvicorn[standard]
 python-multipart
 jinja2
 yt-dlp
+whisperx
+pyannote.audio
 openai-whisper
 sentence-transformers
 faiss-cpu
@@ -12,3 +14,5 @@ python-dotenv
 accelerate
 youtube-transcript-api
 nltk
+gTTS
+moviepy

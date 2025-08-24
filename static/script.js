@@ -100,7 +100,7 @@ function initializePlayer(data) {
     const playlistUl = document.getElementById('playlist-list');
     playlist.forEach((item, index) => {
         const li = document.createElement('li');
-        li.innerHTML = `<span>Segment ${index + 1}</span>${item.narrative_reason}`;
+        li.innerHTML = `<span>${item.speaker || 'SEGMENT ' + (index + 1)}</span>${item.narrative_reason}`;
         li.onclick = () => jumpToSegment(index);
         playlistUl.appendChild(li);
     });
