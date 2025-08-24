@@ -4,8 +4,8 @@
 ## This project is a complete codebase for the AI Video Supercut Generator.
 ##
 ## VERSION UPGRADE (v2.0):
-## - MAJOR ARCHITECTURAL SHIFT: The application now uses an "audio-first" pipeline. It
-##   downloads the audio, performs speaker diarization, and then runs high-accuracy
+## - SHIFT: The application now uses an "audio-first" pipeline. It
+##   downloads the audio, performs speaker diarization ( commented for now - on cuda), and then runs high-accuracy
 ##   transcription to create a rich, speaker-labeled source of truth.
 ## - SPEAKER DIARIZATION: Integrated `pyannote.audio` to identify who spoke when.
 ## - HIGH-ACCURACY TRANSCRIPTION: Upgraded to `WhisperX` for more precise word-level timestamps.
