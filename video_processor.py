@@ -1,8 +1,10 @@
+import mimetypes
 import os, subprocess
 import yt_dlp
 import whisper
 import whisperx
 import torch
+from deepgram import DeepgramClient, PrerecordedOptions
 from sentence_transformers import SentenceTransformer, util
 import faiss
 import numpy as np
@@ -28,7 +30,7 @@ nltk.download('averaged_perceptron_tagger')
 UPLOAD_FOLDER = 'uploads'
 JOB_DATA_FOLDER = 'job_data'
 TRANSCRIPTION_MODEL = "base.en"
-EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
+EMBEDDING_MODEL = 'BAAI/bge-base-en-v1.5'
 # alternative at compute-avail: 'thenlper/gte-large'
 NARRATIVE_MODEL = "google/gemma-3-270m-it"
 QA_MODEL = "google/gemma-3-270m-it"
@@ -46,6 +48,8 @@ USE_ANDROID_FIRST  = True       # try Android player client first (often less th
 TITLE_FALLBACK     = "video"    # fallback title when missing
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+DG_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+DG = DeepgramClient(DG_API_KEY)
 
 # --- Initialize YouTube Transcript API ---
 
@@ -409,6 +413,171 @@ def run_transcription_only(audio_path):
 
     return aligned_result["segments"] # Return segments with word-level timestamps
 
+def _guess_mime(path: str) -> str:
+    mt = mimetypes.guess_type(path)[0]
+    if mt:
+        return mt
+    ext = os.path.splitext(path.lower())[1]
+    return {
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".webm": "audio/webm",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+    }.get(ext, "audio/mp4")
+
+def transcribe_file_via_deepgram_to_whisperx_segments(audio_path: str):
+    """
+    Call Deepgram on a local audio file and return a WhisperX-like structure:
+      [ { "words": [ {word,start,end,speaker?}, ... ] } ]
+    so your existing sentence builders work unchanged.
+    """
+    if not DG_API_KEY:
+        raise RuntimeError("DEEPGRAM_API_KEY not set")
+
+    mime = _guess_mime(audio_path)
+    with open(audio_path, "rb") as f:
+        opts = PrerecordedOptions(
+            model="nova-3",      # or "nova-3"
+            diarize=False,        # include speaker IDs on words
+            utterances=False,     # optional (handy for debugging)
+            punctuate=True,
+            paragraphs=True,    # we don't need paragraphs
+            smart_format=True,
+        )
+        resp = DG.listen.prerecorded.v("1").transcribe_file({"buffer": f, "mimetype": mime}, opts)
+        
+    alt = resp.results.channels[0].alternatives[0]
+    words = alt.words or []
+
+    whisperx_like = [{
+        "words": [
+            {
+                "word":   w["word"],
+                "start":  float(w["start"]),
+                "end":    float(w["end"]),
+                "speaker": str(w.speaker) if getattr(w, "speaker", None) is not None else "0",
+            }
+            for w in words
+        ]
+    }]
+    return whisperx_like
+
+
+SENT_END_RE = re.compile(r'([\.!?]+[”"\')\]]*\s+|[\.!?]+$)')  # ., !, ?, with trailing quotes/brackets
+
+def transcribe_file_via_deepgram(audio_path: str, model: str = "nova-3", diarize: bool = True):
+    """Call Deepgram pre-recorded and return the typed SDK response."""
+    if not DG:
+        raise RuntimeError("DEEPGRAM_API_KEY not set")
+    mime = _guess_mime(audio_path)
+    with open(audio_path, "rb") as f:
+        opts = PrerecordedOptions(
+            model=model,
+            diarize=diarize,
+            utterances=False,
+            punctuate=True,    # we need utterances for punctuation-rich transcript
+            paragraphs=True,
+            smart_format=True
+        )
+        return DG.listen.prerecorded.v("1").transcribe_file({"buffer": f, "mimetype": mime}, opts)
+    
+def _utterance_words(utt, alt_words) -> List:
+    """
+    Deepgram usually returns utt.words. If not (rare), fall back by
+    slicing the channel's words by utterance time window.
+    """
+    if getattr(utt, "words", None):
+        return [w for w in utt.words if w.start is not None and w.end is not None and w.word]
+    # Fallback: filter channel words by time
+    return [
+        w for w in alt_words
+        if (w.start is not None and w.end is not None and w.word
+            and w.start >= utt.start - 0.05 and w.end <= utt.end + 0.05)
+    ]
+
+def _word_char_ranges_in_transcript(transcript: str, words: List) -> List:
+    """
+    Build approximate char spans for each Deepgram word within the utterance transcript.
+    We search sequentially (case-insensitive), tolerating punctuation/spacing differences.
+    """
+    ranges = []
+    pos = 0
+    t = transcript
+    for w in words:
+        token = w.word.strip()
+        if not token:
+            continue
+        # find the next occurrence from current pos
+        idx = t.lower().find(token.lower(), pos)
+        if idx == -1:
+            # be forgiving: try a small sliding window backtrack
+            back = max(0, pos - 10)
+            idx = t.lower().find(token.lower(), back)
+        if idx == -1:
+            # if still not found, approximate consecutive placement
+            idx = pos
+        start_ch = idx
+        end_ch = idx + len(token)
+        ranges.append((start_ch, end_ch, float(w.start), float(w.end)))
+        pos = end_ch
+    return ranges
+
+def deepgram_utterances_to_sentence_segments(resp) -> List[Dict[str, Any]]:
+    """
+    Convert Deepgram SDK v3 pre-recorded response (with utterances=True)
+    into sentence-level segments WITH punctuation and accurate timestamps.
+
+    Returns: [{ "text": str, "start": float, "end": float, "speaker": "0/1/.." }, ...]
+    """
+    # Channel-wide words (for rare fallback)
+    alt = resp.results.channels[0].alternatives[0]
+    alt_words = [w for w in (alt.words or []) if w.start is not None and w.end is not None and w.word]
+
+    sentence_segments: List[Dict[str, Any]] = []
+    utterances = getattr(resp.results, "utterances", []) or []
+    for utt in utterances:
+        text = (utt.transcript or "").strip()
+        if not text:
+            continue
+
+        # 1) Split this utterance's transcript into sentence-like spans by punctuation.
+        spans = []
+        last = 0
+        for m in SENT_END_RE.finditer(text):
+            spans.append((last, m.end()))
+            last = m.end()
+        if last < len(text):
+            spans.append((last, len(text)))
+
+        # 2) Get the words belonging to this utterance, then compute char ranges for each word.
+        words = _utterance_words(utt, alt_words)
+        word_char_ranges = _word_char_ranges_in_transcript(text, words) if words else []
+
+        # 3) For each sentence span, take min(start) & max(end) over overlapping words.
+        for s0, s1 in spans:
+            sent_text = text[s0:s1].strip()
+            if not sent_text:
+                continue
+
+            ts = [wc for wc in word_char_ranges if not (wc[1] <= s0 or wc[0] >= s1)]
+            if ts:
+                s_start = min(t[2] for t in ts)
+                s_end   = max(t[3] for t in ts)
+            else:
+                # fallback to utterance time if no overlap found
+                s_start, s_end = float(utt.start), float(utt.end)
+
+            sentence_segments.append({
+                "text": sent_text,
+                "start": s_start,
+                "end": s_end,
+                "speaker": str(getattr(utt, "speaker", "0") if getattr(utt, "speaker", None) is not None else "0")
+            })
+
+    return sentence_segments
 
 def create_speaker_aware_sentences(whisperx_segments):
     """Groups words into sentences and assigns a speaker to each sentence."""
@@ -456,6 +625,106 @@ def calculate_diversity_scores(sequences, embedding_model):
         diversity_scores.append(1 - avg_similarity)
         
     return diversity_scores
+
+def _char_spans_for_words(text: str, words) -> List:
+    spans, pos, low = [], 0, text.lower()
+    for w in words:
+        token = (w.word or "").strip()
+        if not token: continue
+        i = low.find(token.lower(), pos)
+        if i == -1:
+            i = low.find(token.lower(), max(0, pos-10))
+        if i == -1:
+            i = pos
+        spans.append((i, i+len(token), float(w.start), float(w.end)))
+        pos = i + len(token)
+    return spans
+
+def _split_text_to_sentences(text: str) -> List[tuple]:
+    spans, last = [], 0
+    for m in SENT_END_RE.finditer(text):
+        spans.append((last, m.end()))
+        last = m.end()
+    if last < len(text):
+        spans.append((last, len(text)))
+    return spans
+
+def _words_for_unit(unit, all_words):
+    """Prefer unit.words; else slice channel words by unit time."""
+    if getattr(unit, "words", None):
+        return [w for w in unit.words if w.start is not None and w.end is not None and w.word]
+    u_start = float(getattr(unit, "start", 0.0))
+    u_end   = float(getattr(unit, "end",   0.0)) or (all_words[-1].end if all_words else 0.0)
+    return [w for w in all_words if w.start is not None and w.end is not None and w.word
+            and w.start >= u_start - 0.05 and w.end <= u_end + 0.05]
+
+def deepgram_to_sentence_segments(resp) -> List[Dict[str, Any]]:
+    """
+    Prefer paragraphs (punctuated) then fallback to utterances; map sentences back to word timings.
+    Returns: [{text, start, end, speaker}]
+    """
+    ch  = resp.results.channels[0]
+    alt = ch.alternatives[0]
+    all_words = [w for w in (alt.words or []) if w.start is not None and w.end is not None and w.word]
+
+    out: List[Dict[str, Any]] = []
+    paragraphs = getattr(resp.results, "paragraphs", None)
+    utterances = getattr(resp.results, "utterances", None)
+
+    units = []
+    if paragraphs and getattr(paragraphs, "paragraphs", None):
+        for p in paragraphs.paragraphs:
+            units.append(p)
+    elif utterances:
+        for u in utterances:
+            units.append(u)
+    else:
+        units.append(alt)
+
+    for unit in units:
+        text = (getattr(unit, "transcript", None) or getattr(alt, "transcript", "")).strip()
+        if not text:
+            continue
+
+        words = _words_for_unit(unit, all_words)
+        # if Deepgram already supplies sentence objects under paragraph, use them
+        if getattr(unit, "sentences", None):
+            for s in unit.sentences:
+                s_text = (s.text or "").strip()
+                if not s_text: continue
+                w_in = [w for w in words if w.start >= float(s.start) - 0.05 and w.end <= float(s.end) + 0.05]
+                if w_in:
+                    s_start = float(min(w.start for w in w_in))
+                    s_end   = float(max(w.end   for w in w_in))
+                else:
+                    s_start, s_end = float(s.start), float(s.end)
+                out.append({
+                    "text": s_text,
+                    "start": s_start,
+                    "end": s_end,
+                    "speaker": str(getattr(unit, "speaker", "0") if getattr(unit, "speaker", None) is not None else "0"),
+                })
+            continue
+
+        # otherwise split by punctuation and align via words
+        char_map = _char_spans_for_words(text, words) if words else []
+        for s0, s1 in _split_text_to_sentences(text):
+            s_text = text[s0:s1].strip()
+            if not s_text: continue
+            overlaps = [c for c in char_map if not (c[1] <= s0 or c[0] >= s1)]
+            if overlaps:
+                s_start = min(c[2] for c in overlaps)
+                s_end   = max(c[3] for c in overlaps)
+            else:
+                s_start = float(getattr(unit, "start", 0.0))
+                s_end   = float(getattr(unit, "end",   0.0)) or s_start
+            out.append({
+                "text": s_text,
+                "start": s_start,
+                "end": s_end,
+                "speaker": str(getattr(unit, "speaker", "0") if getattr(unit, "speaker", None) is not None else "0"),
+            })
+    return out
 
 def transcribe_video_whisper(video_path):
     """Transcribes the video using Whisper."""
@@ -606,13 +875,17 @@ def identify_sequences(transcript_sentences, relevant_indices_set):
         sequences.append(current_sequence)
     return sequences
 
-def score_sequences(sequences, similarity_scores, diversity_scores):
+def score_sequences(sequences, score_by_id, diversity_scores):
     """Assigns a value score to each sequence based on relevance and diversity."""
     scored_sequences = []
     for i, seq in enumerate(sequences):
         seq_indices = [s['original_index'] for s in seq]
-        avg_relevance = np.mean([similarity_scores[i] for i in seq_indices])
-        peak_relevance = np.max([similarity_scores[i] for i in seq_indices])
+        seq_sims = [score_by_id.get(j, 0.0) for j in seq_indices]   # ← safe
+        if seq_sims:
+            avg_relevance  = float(np.mean(seq_sims))
+            peak_relevance = float(np.max(seq_sims))
+        else:
+            avg_relevance = peak_relevance = 0.0
         duration = seq[-1]['end'] - seq[0]['start']
         
         relevance_score = (avg_relevance * 0.7 + peak_relevance * 0.3)
@@ -754,11 +1027,11 @@ def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
         ## update_job_status(job_id, jobs, 'processing', 60, 'Structuring transcript...')
         ## sentence_segments = create_speaker_aware_sentences(whisperx_segments)
 
-        update_job_status(job_id, jobs, 'processing', 40, 'Transcribing audio...')
-        whisperx_segments = run_transcription_only(audio_path)
+        update_job_status(job_id, jobs, 'processing', 40, 'Transcribing (Deepgram)...')
+        dg_resp = transcribe_file_via_deepgram(audio_path, model="nova-3", diarize=True)
 
-        update_job_status(job_id, jobs, 'processing', 65, 'Structuring transcript...')
-        sentence_segments = create_sentence_segments_from_whisperx(whisperx_segments)
+        update_job_status(job_id, jobs, "processing", 65, "Building sentence segments...")
+        sentence_segments = deepgram_to_sentence_segments(dg_resp)
     
         for i, seg in enumerate(sentence_segments): seg['original_index'] = i
         full_transcript_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}_full_transcript.txt')
@@ -766,17 +1039,28 @@ def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
         
         update_job_status(job_id, jobs, 'processing', 65, 'Cleaning query for search...')
         desired_duration_minutes, clean_query = clean_query_for_search(query)
-
-        update_job_status(job_id, jobs, 'processing', 70, 'Searching for relevant content...')
         model = SentenceTransformer(EMBEDDING_MODEL)
-        embeddings = model.encode([s['text'] for s in sentence_segments]).astype('float32')
-        query_embedding = model.encode([clean_query]).astype('float32')
-        index = faiss.IndexFlatL2(embeddings.shape[1]); index.add(embeddings)
-        index_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}.index'); faiss.write_index(index, index_path)
-        distances, indices = index.search(query_embedding, k=len(sentence_segments))
-        similarity_scores = 1 / (1 + distances[0])
-        relevance_threshold = 0.5
-        relevant_indices_set = {i for i, score in zip(indices[0], similarity_scores) if score > relevance_threshold}
+        update_job_status(job_id, jobs, 'processing', 70, 'Searching for relevant content...')
+        texts = [s['text'] for s in sentence_segments]
+        embeddings = model.encode(
+            texts, batch_size=64,
+            normalize_embeddings=True,  # IMPORTANT
+            show_progress_bar=False
+        ).astype("float32")
+        query_vec  = model.encode([clean_query], normalize_embeddings=True).astype('float32')
+        index = faiss.IndexFlatIP(embeddings.shape[1])
+        index.add(embeddings)
+        index_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}.index');
+        faiss.write_index(index, index_path)
+
+        k_first_stage = min( max(100, int(len(texts)*0.2)), len(texts) )
+        distances, indices = index.search(query_vec, k_first_stage)
+        similarity_scores = distances[0]
+        cand_ids = indices[0]
+        mu, sigma = float(similarity_scores.mean()), float(similarity_scores.std())
+        cut = max(mu - 0.25*sigma, 0.15)  # gentle floor
+        relevant_ids = [i for i, s in zip(cand_ids, similarity_scores) if s >= cut]
+        relevant_indices_set = set(relevant_ids)
 
         update_job_status(job_id, jobs, 'processing', 75, 'Identifying key sequences...')
         sequences = identify_sequences(sentence_segments, relevant_indices_set)
@@ -784,8 +1068,8 @@ def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
         update_job_status(job_id, jobs, 'processing', 80, 'Generating reasons for diversity ranking...')
         sequences_with_reasons = generate_narrative_reasons_batch(clean_query, sequences)
         diversity_scores = calculate_diversity_scores(sequences_with_reasons, model)
-        
-        scored_sequences = score_sequences(sequences_with_reasons, similarity_scores, diversity_scores)
+        score_by_id = {doc_id: sim for doc_id, sim in zip(cand_ids, similarity_scores)}
+        scored_sequences = score_sequences(sequences_with_reasons, score_by_id, diversity_scores)
 
         if desired_duration_minutes == 0:
             desired_duration_minutes = None
@@ -800,7 +1084,7 @@ def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
         playlist = [{"start": seq['start'], "end": seq['end'], "narrative_reason": seq['narrative_reason']} for seq in selected_sequences]
         if not playlist: raise ValueError("Narrative Engine failed to produce a playlist.")
 
-        narration_url = youtube_url # Narration disabled for now
+        narration_url = None # Narration disabled for now
         
         result_data = {"video_id": video_id, "playlist": playlist, "narration_url": narration_url}
         jobs[job_id] = {'status': 'completed', 'progress': 100, 'message': 'Processing complete!', 'result': result_data}

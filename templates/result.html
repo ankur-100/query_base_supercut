@@ -61,7 +61,7 @@
     </div>
 
     <script>
-        const resultData = JSON.parse('{{ result_data | safe }}');
+    const resultData = {{ result_data | tojson }};
     </script>
     <script src="https://www.youtube.com/iframe_api"></script>
     <script src="/static/script.js"></script>

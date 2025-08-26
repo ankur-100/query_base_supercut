@@ -97,20 +97,20 @@ function initializePlayer(data) {
         narrationContainer.style.display = 'block';
     }
 
-    const playlistUl = document.getElementById('playlist-list');
-    playlist.forEach((item, index) => {
-        const li = document.createElement('li');
-        li.innerHTML = `<span>${item.speaker || 'SEGMENT ' + (index + 1)}</span>${item.narrative_reason}`;
-        li.onclick = () => jumpToSegment(index);
-        playlistUl.appendChild(li);
-    });
-
     player = new YT.Player('player', {
         height: '390',
         width: '640',
         videoId: videoId,
         playerVars: { 'playsinline': 1, 'autoplay': 1, 'controls': 1, 'rel': 0, 'modestbranding': 1 },
         events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange }
+    });
+    
+    const playlistUl = document.getElementById('playlist-list');
+    playlist.forEach((item, index) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>${item.speaker || 'SEGMENT ' + (index + 1)}</span>${item.narrative_reason}`;
+        li.onclick = () => jumpToSegment(index);
+        playlistUl.appendChild(li);
     });
 }
 

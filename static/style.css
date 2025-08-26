@@ -198,6 +198,7 @@ header p {
     display: inline-block;
     background-image: linear-gradient(to right, var(--accent-start), var(--accent-end));
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 audio { width: 100%; }

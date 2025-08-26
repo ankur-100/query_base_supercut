@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 import uuid
 import json
 from fastapi import FastAPI, Request, Form, BackgroundTasks
@@ -8,16 +7,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Import the core processing functions
 from video_processor import process_audio_pipeline, answer_question_from_video
 
 # --- App Initialization ---
 app = FastAPI()
-load_dotenv()  # Load environment variables from .env file
 
 # --- Static Files and Templates Configuration ---
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/job_data", StaticFiles(directory="job_data"), name="job_data") # Serve narration files
+app.mount("/job_data", StaticFiles(directory="job_data"), name="job_data")
 templates = Jinja2Templates(directory="templates")
 
 # --- Create Directories ---
@@ -40,7 +41,7 @@ async def create_processing_job(
     background_tasks: BackgroundTasks,
     youtube_url: str = Form(...),
     query: str = Form(...),
-    with_narration: bool = Form(False),
+    with_narration: bool = Form(False)
 ):
     """
     Accepts a new job request, assigns a job ID, and starts the
@@ -52,7 +53,14 @@ async def create_processing_job(
     job_id = str(uuid.uuid4())
     jobs[job_id] = {'status': 'queued', 'progress': 0, 'message': 'Job is queued...'}
 
-    background_tasks.add_task(process_audio_pipeline, youtube_url, query, job_id, jobs, with_narration)
+    background_tasks.add_task(
+        process_audio_pipeline, 
+        youtube_url, 
+        query, 
+        job_id, 
+        jobs, 
+        with_narration
+    )
 
     return JSONResponse(content={'job_id': job_id})
 
@@ -84,7 +92,7 @@ async def get_result_page(request: Request, job_id: str):
     if job and job.get('status') == 'completed':
         return templates.TemplateResponse("result.html", {
             "request": request,
-            "result_data": json.dumps(job.get('result')),
+            "result_data": job.get('result'),
             "job_id": job_id
         })
     elif job:
