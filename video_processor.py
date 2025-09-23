@@ -1,12 +1,12 @@
+import torch
 import mimetypes
 import os, subprocess
 import yt_dlp
 import whisper
 import whisperx
-import torch
 from deepgram import DeepgramClient, PrerecordedOptions
 from sentence_transformers import SentenceTransformer, util
-import faiss
+import faiss                  # FAISS
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re, json, ast
@@ -17,14 +17,26 @@ from gtts import gTTS
 from pyannote.audio import Pipeline
 from pyannote.core import Segment
 from dotenv import load_dotenv
+import logging            # logging
+import os, time, gzip, hashlib, random
+from typing import Optional, Any, Dict
+import redis
+import zlib
+import orjson
+import io
+import uuid
 
 # Load environment variables
 load_dotenv()
+
+
 
 # Download the sentence tokenizer model from NLTK
 nltk.download('punkt', quiet=True)
 nltk.download('punkt_tab')
 nltk.download('averaged_perceptron_tagger')
+
+
 
 # --- Configuration ---
 UPLOAD_FOLDER = 'uploads'
@@ -35,6 +47,7 @@ EMBEDDING_MODEL = 'BAAI/bge-base-en-v1.5'
 NARRATIVE_MODEL = "google/gemma-3-270m-it"
 QA_MODEL = "google/gemma-3-270m-it"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+logging.info(f"Using device: {DEVICE}")
 COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 NUM_RE  = r'-?\d+(?:\.\d+)?'
@@ -211,10 +224,11 @@ def _pick_audio_format(info):
 
     return fid(audio_sorted[0]) or "bestaudio/best"
 
+
 def download_audio(url, job_id):
-    """
-    Download audio-only (no post-processing). Returns (path, title, video_id).
-    """
+
+   # Download audio-only (no post-processing). Returns (path, title, video_id).   
+    
     # Probe first to choose an actually-available format
     probe_opts = {
         "quiet": True,
@@ -244,10 +258,10 @@ def download_audio(url, job_id):
         info = ydl.extract_info(url, download=True)
         path = ydl.prepare_filename(info)  # this will be .m4a or .webm depending on fmt
         return path, info.get("title", "video"), get_video_id(url)
-    """
-    Download YouTube audio without Android/PO token.
-    Copies/remuxes (no re-encode). Returns (path, title, video_id).
-    """
+    
+   # Download YouTube audio without Android/PO token.
+   # Copies/remuxes (no re-encode). Returns (path, title, video_id).
+    
     # Probe to see what actually exists
     probe_opts = {
         "quiet": True,
@@ -280,7 +294,7 @@ def download_audio(url, job_id):
         path = ydl.prepare_filename(info)
         # If ffmpeg remuxes, yt-dlp will set the right extension automatically.
         return path, info.get("title", "video"), get_video_id(url)
-    """Downloads only the audio from a YouTube video."""
+    # Download YouTube audio with Android/PO token (often less throttled).    
     ydl_opts = {
         # prefer English m4a (140-9), then English opus (251-9), then any English, then best
         'format': '140-9/251-9/bestaudio[language=en]/bestaudio',
@@ -312,6 +326,9 @@ def download_audio(url, job_id):
                 path = path[:-len(ext)] + '.mp3'
                 break
         return path, info.get('title', 'video'), get_video_id(url)
+
+
+
 
 def _ensure_wav_16k_mono(src_path: str, overwrite: bool = False) -> str:
     """
@@ -468,22 +485,33 @@ def transcribe_file_via_deepgram_to_whisperx_segments(audio_path: str):
 
 SENT_END_RE = re.compile(r'([\.!?]+[”"\')\]]*\s+|[\.!?]+$)')  # ., !, ?, with trailing quotes/brackets
 
+
+
 def transcribe_file_via_deepgram(audio_path: str, model: str = "nova-3", diarize: bool = True):
-    """Call Deepgram pre-recorded and return the typed SDK response."""
+    """Call Deepgram pre-recorded and return the SDK response (not a tuple)."""
     if not DG:
         raise RuntimeError("DEEPGRAM_API_KEY not set")
+
     mime = _guess_mime(audio_path)
+
     with open(audio_path, "rb") as f:
         opts = PrerecordedOptions(
             model=model,
             diarize=diarize,
+            # Set to True only if you actually need utterance segments in the response:
             utterances=False,
-            punctuate=True,    # we need utterances for punctuation-rich transcript
+            punctuate=True,
             paragraphs=True,
-            smart_format=True
+            smart_format=True,
         )
-        return DG.listen.prerecorded.v("1").transcribe_file({"buffer": f, "mimetype": mime}, opts)
+        # NOTE: removed trailing comma so we return the response, not a 1-tuple
+        return DG.listen.prerecorded.v("1").transcribe_file(
+            {"buffer": f, "mimetype": mime},
+            opts
+        )
     
+
+
 def _utterance_words(utt, alt_words) -> List:
     """
     Deepgram usually returns utt.words. If not (rare), fall back by
@@ -972,14 +1000,7 @@ Generate the final JSON script:
     return [{"start": seq['start'], "end": seq['end'], "narrative_reason": "This segment provides relevant context."} for seq in selected_sequences]
 
 
-def generate_narrative_reasons_batch(query, sequences):
-    """Generates narrative reasons for a batch of sequences."""
-    for seq in sequences:
-        full_text = " ".join([s['text'] for s in seq])
-        messages = [{"role": "user", "content": f"""In one sentence, explain why the following text is relevant to the user's query. Query: "{query}" Text: "{full_text}" Reason: """}]
-        reason = generate_gemma_response(messages, NARRATIVE_MODEL)
-        seq[0]['narrative_reason'] = reason
-    return sequences
+
 
 def clean_query_for_search(query): 
     """
@@ -1010,50 +1031,361 @@ Query: "{query}"
     except (json.JSONDecodeError, TypeError):
         return None, query
     
-# --- Main Pipeline & Q&A Functions ---
+
+def generate_narrative_reasons_batch(query, sequences):
+    """Generates narrative reasons for a batch of sequences."""
+    for seq in sequences:
+        full_text = " ".join([s['text'] for s in seq])
+        messages = [{"role": "user", "content": f"""In one sentence, explain why the following text is relevant to the user's query. Query: "{query}" Text: "{full_text}" Reason: """}]
+        reason = generate_gemma_response(messages, NARRATIVE_MODEL)
+        seq[0]['narrative_reason'] = reason
+    return sequences
+
+
+# ---- Redis connection ----
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# decode_responses=False so we can store/read raw bytes safely
+r = redis.Redis.from_url(REDIS_URL, decode_responses=False)
+r.ping()
+print("Successfully connected to Redis! ✅")
+
+VIDEO_CACHE_TTL = int(os.getenv("VIDEO_CACHE_TTL", "604800"))  # 7 days
+
+
+
+# ------- HSET manual mapping=... to avoid arg count errors ------- #
+# def _hset_mapping(conn: redis.Redis, name: str, mapping: dict):
+#     """
+#     Robust HSET that works across redis-py versions and avoids 'wrong number of arguments'.
+#     Falls back to manual flattening if needed.
+#     """
+#     if not mapping:
+#         return 0
+
+#     # 1) Try modern API (redis-py >= 4): hset(name, mapping=...)
+#     try:
+#         return conn.hset(name, mapping=mapping)
+#     except TypeError:
+#         # Old client that doesn't accept mapping=; try HMSET if available
+#         try:
+#             return conn.hmset(name, mapping)  # deprecated on server, but works as compatibility
+#         except AttributeError:
+#             pass  # fall through to manual flatten
+
+#     # 2) Manual flatten (works with any redis-py version and pipelines)
+#     flat = []
+#     for field, value in mapping.items():
+#         # Field must be bytes or str
+#         if isinstance(field, str):
+#             field = field.encode("utf-8")
+#         elif not isinstance(field, (bytes, bytearray)):
+#             field = bytes(field)
+
+#         # Value must be bytes (your serializers already ensure bytes)
+#         if isinstance(value, memoryview):
+#             value = bytes(value)
+#         elif isinstance(value, str):
+#             value = value.encode("utf-8")
+#         elif not isinstance(value, (bytes, bytearray)):
+#             # Safety: last-resort cast
+#             value = bytes(value)
+
+#         flat.extend([field, value])
+
+#     return conn.execute_command("HSET", name, *flat)
+
+def _hset_fields_safely(conn, name: str, mapping: dict, ttl: int = None):
+    """
+    Set hash fields one-by-one in a pipeline.
+    Eliminates all HSET arity/version issues.
+    """
+    if not mapping:
+        return
+
+    def _to_bytes(x):
+        if isinstance(x, (bytes, bytearray)): return bytes(x)
+        if isinstance(x, memoryview): return bytes(x)
+        if isinstance(x, str): return x.encode("utf-8")
+        raise TypeError(f"value must be bytes/str, got {type(x).__name__}")
+
+    with conn.pipeline() as pipe:
+        for field, value in mapping.items():
+            # field: bytes
+            if isinstance(field, (bytes, bytearray)):
+                f = bytes(field)
+            else:
+                f = str(field).encode("utf-8")
+            v = _to_bytes(value)
+            pipe.hset(name, f, v)         # HSET key field value (always valid)
+        if ttl is not None:
+            pipe.expire(name, ttl)
+        pipe.execute()
+
+# -------- Debugging helpers -------- #
+def _debug_check_mapping(mapping: dict):
+    for k, v in mapping.items():
+        if v is None:
+            raise ValueError(f"Redis mapping value for {k!r} is None")
+        if not isinstance(v, (bytes, bytearray, memoryview, str)):
+            # Our serializers should have produced bytes already
+            raise TypeError(f"Redis mapping value for {k!r} must be bytes/str, got {type(v).__name__}")
+
+# ---- Serialization helpers ----
+def _dumps_json(obj) -> bytes:
+    return orjson.dumps(obj)
+
+def _loads_json(buf: bytes):
+    return orjson.loads(buf)
+
+def _dumps_ndarray(arr: np.ndarray) -> bytes:
+    # ensure contiguous & desired dtype to avoid surprises
+    arr = np.ascontiguousarray(arr).astype(np.float32, copy=False)
+    bio = io.BytesIO()
+    # NPY header + data (portable); then compress to shrink Redis memory
+    np.save(bio, arr, allow_pickle=False)
+    out = zlib.compress(bio.getvalue(), level=6)
+    assert isinstance(out, (bytes, bytearray)), "ndarray dump must be bytes"
+    return out
+
+def _loads_ndarray(buf: bytes) -> np.ndarray:
+    raw = zlib.decompress(buf)
+    return np.load(io.BytesIO(raw), allow_pickle=False)
+
+def _dumps_faiss_index(index) -> bytes:
+    """
+    Robustly turn a FAISS index into bytes across FAISS versions.
+    """
+    # 1) Try in-memory serialization
+    try:
+        vec = faiss.serialize_index(index)  # VectorUint8 or bytes depending on build
+        # Already bytes?
+        if isinstance(vec, (bytes, bytearray, memoryview)):
+            return bytes(vec)
+        # VectorUint8 -> numpy array -> bytes
+        if hasattr(faiss, "vector_to_array"):
+            arr = faiss.vector_to_array(vec)           # np.ndarray dtype=uint8
+            return arr.tobytes()
+        # Some builds may let numpy view work directly
+        try:
+            arr = np.asarray(vec, dtype=np.uint8)
+            return arr.tobytes()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # 2) Fallback: write to a temp file, then read the bytes
+    tmp_path = os.path.join(JOB_DATA_FOLDER, f"_tmp_{uuid.uuid4().hex}.index")
+    faiss.write_index(index, tmp_path)
+    with open(tmp_path, "rb") as f:
+        data = f.read()
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
+    return data
+
+def _loads_faiss_index(buf: bytes):
+    """
+    Rebuild a FAISS index from bytes, using the fastest path available.
+    """
+    # 1) Try direct in-memory deserialization
+    try:
+        # Many builds accept a numpy uint8 array directly
+        arr = np.frombuffer(buf, dtype=np.uint8)
+        return faiss.deserialize_index(arr)
+    except Exception:
+        pass
+
+    # 2) Fallback: write to a temp file, then read it
+    tmp_path = os.path.join(JOB_DATA_FOLDER, f"_tmp_{uuid.uuid4().hex}.index")
+    with open(tmp_path, "wb") as f:
+        f.write(buf)
+    try:
+        idx = faiss.read_index(tmp_path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+    return idx
+
+def _cache_key(video_id: str) -> str:
+    return f"{video_id}"
+
+def _fetch_cached_video(video_id: str):
+    """Return dict with objects if ALL fields are present and valid; else None."""
+    key = _cache_key(video_id)
+
+    def _hget_dual(name: str):
+        # Try str then bytes, then bytes then str (covers how fields were stored)
+        v = r.hget(key, name)
+        if v is None:
+            v = r.hget(key, name.encode("utf-8"))
+        if v is None:
+            # In case caller passed bytes already
+            try:
+                v = r.hget(key, name.decode("utf-8"))  # will fail if name is str
+            except Exception:
+                pass
+        return v
+
+    # Fetch fields one by one
+    ss  = _hget_dual("sentence_segments")
+    tx  = _hget_dual("texts")
+    emb = _hget_dual("embeddings")
+    fx  = _hget_dual("faiss_index")
+    mt  = _hget_dual("meta")
+
+    # If any is missing, treat as miss
+    if any(x is None for x in (ss, tx, emb, fx, mt)):
+        # Optional debug: list existing fields so you can see what's there
+        try:
+            existing = r.hkeys(key)
+            try:
+                existing = [e.decode() if isinstance(e, (bytes, bytearray)) else str(e) for e in existing]
+            except Exception:
+                existing = [str(e) for e in existing]
+            print(f"[CACHE MISS] video_id={video_id} key={key} — found fields: {existing}")
+        except Exception:
+            pass
+        return None
+
+    # Deserialize
+    try:
+        sentence_segments = _loads_json(ss)
+        texts             = _loads_json(tx)
+        embeddings        = _loads_ndarray(emb)
+        index             = _loads_faiss_index(fx)
+        meta              = _loads_json(mt)
+    except Exception as e:
+        print(f"[CACHE CORRUPT] video_id={video_id} key={key} — {e}")
+        return None
+
+    # Validate
+    if meta.get("embedding_model") != EMBEDDING_MODEL:
+        print(f"[CACHE INVALID] video_id={video_id} — model mismatch: {meta.get('embedding_model')} != {EMBEDDING_MODEL}")
+        return None
+    if getattr(index, "d", None) != int(embeddings.shape[1]):
+        print(f"[CACHE INVALID] video_id={video_id} — dim mismatch: index.d={getattr(index,'d',None)} emb_dim={int(embeddings.shape[1])}")
+        return None
+
+    # Refresh TTL on hit
+    try:
+        r.expire(key, VIDEO_CACHE_TTL)
+    except Exception:
+        pass
+
+    print(f"[CACHE HIT] video_id={video_id} n_sentences={meta.get('n_sentences','?')} emb_dim={meta.get('emb_dim','?')}")
+    return {
+        "sentence_segments": sentence_segments,
+        "texts": texts,
+        "embeddings": embeddings,
+        "index": index,
+        "meta": meta,
+    }
+
+
+def _store_cached_video(video_id: str, sentence_segments, texts, embeddings, index):
+    key = _cache_key(video_id)
+    meta = {
+        "embedding_model": EMBEDDING_MODEL,
+        "emb_dim": int(embeddings.shape[1]),
+        "n_sentences": int(embeddings.shape[0]),
+        "created_at": int(time.time()),
+    }
+    mapping = {
+        b"sentence_segments": _dumps_json(sentence_segments),
+        b"texts": _dumps_json(texts),
+        b"embeddings": _dumps_ndarray(embeddings),
+        b"faiss_index": _dumps_faiss_index(index),
+        b"meta": _dumps_json(meta)
+    }
+
+    # print("HSET fields:", {k.decode() if isinstance(k, (bytes, bytearray)) else k: type(v).__name__ 
+    #                    for k, v in mapping.items()})
+    _debug_check_mapping(mapping)
+    # IMPORTANT: use mapping= to avoid "wrong number of arguments for 'hset'"
+    _hset_fields_safely(r, key, mapping, ttl=VIDEO_CACHE_TTL)
+    r.expire(key, VIDEO_CACHE_TTL)
+
+
 
 def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
-    """The new, audio-first main pipeline."""
+    """The new, audio-first main pipeline with Redis caching."""
     try:
         update_job_status(job_id, jobs, 'processing', 10, 'Extracting audio...')
         audio_path, _, video_id = download_audio(youtube_url, job_id)
 
-       ## update_job_status(job_id, jobs, 'processing', 25, 'Identifying speakers...')
-       ## diarization = run_diarization(audio_path)
+        cache_hit = _fetch_cached_video(video_id)
 
-##        update_job_status(job_id, jobs, 'processing', 50, 'Transcribing and aligning...')
-##        whisperx_segments = run_transcription_and_alignment(audio_path, diarization)
+        if cache_hit:
+            print(f"[CACHE HIT] video_id={video_id} — skipping transcription & embedding")
+            update_job_status(job_id, jobs, 'processing', 65, 'Cache hit — loading embeddings & index...')
+            # ---- Cache HIT: reconstruct everything needed to continue at ~65% ----
+            update_job_status(job_id, jobs, 'processing', 65, 'Cache hit — loading embeddings & index...')
+            sentence_segments = cache_hit["sentence_segments"]
+            texts             = cache_hit["texts"]
+            embeddings        = cache_hit["embeddings"]
+            index             = cache_hit["index"]
 
-        ## update_job_status(job_id, jobs, 'processing', 60, 'Structuring transcript...')
-        ## sentence_segments = create_speaker_aware_sentences(whisperx_segments)
+            # Recreate artifacts used later in the pipeline (for downstream functions):
+            for i, seg in enumerate(sentence_segments):
+                seg['original_index'] = seg.get('original_index', i)
 
-        update_job_status(job_id, jobs, 'processing', 40, 'Transcribing (Deepgram)...')
-        dg_resp = transcribe_file_via_deepgram(audio_path, model="nova-3", diarize=True)
+            # Write full transcript and FAISS index to disk to satisfy later consumers
+            full_transcript_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}_full_transcript.txt')
+            with open(full_transcript_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(texts))
 
-        update_job_status(job_id, jobs, "processing", 65, "Building sentence segments...")
-        sentence_segments = deepgram_to_sentence_segments(dg_resp)
-    
-        for i, seg in enumerate(sentence_segments): seg['original_index'] = i
-        full_transcript_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}_full_transcript.txt')
-        with open(full_transcript_path, 'w', encoding='utf-8') as f: f.write("\n".join([s['text'] for s in sentence_segments]))
-        
-        update_job_status(job_id, jobs, 'processing', 65, 'Cleaning query for search...')
-        desired_duration_minutes, clean_query = clean_query_for_search(query)
-        model = SentenceTransformer(EMBEDDING_MODEL)
+            index_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}.index')
+            faiss.write_index(index, index_path)
+
+        else:
+            print(f"[CACHE MISS] video_id={video_id} — running transcription & embedding")
+            # ---- Cache MISS: run your normal pipeline until the index is ready ----
+            update_job_status(job_id, jobs, 'processing', 40, 'Transcribing (Deepgram)...')
+            dg_resp = transcribe_file_via_deepgram(audio_path, model="nova-3", diarize=True)
+
+            update_job_status(job_id, jobs, "processing", 65, "Building sentence segments...")
+            sentence_segments = deepgram_to_sentence_segments(dg_resp)
+            texts = [s['text'] for s in sentence_segments]
+            for i, seg in enumerate(sentence_segments):
+                seg['original_index'] = i
+
+            full_transcript_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}_full_transcript.txt')
+            with open(full_transcript_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(texts))
+
+            # Build embeddings + FAISS
+            update_job_status(job_id, jobs, 'processing', 65, 'Embedding transcript...')
+            model = SentenceTransformer(EMBEDDING_MODEL)
+
+            embeddings = model.encode(
+                texts,
+                batch_size=64,
+                normalize_embeddings=True,  # IMPORTANT: IP == cosine later
+                show_progress_bar=False
+            ).astype('float32')
+
+            index = faiss.IndexFlatIP(embeddings.shape[1])
+            index.add(embeddings)
+
+            index_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}.index')
+            faiss.write_index(index, index_path)
+
+            # Store in Redis for next time
+            _store_cached_video(video_id, sentence_segments, texts, embeddings, index)
+
+        # ---- Query-dependent section (runs for both cache-hit & cache-miss) ----
         update_job_status(job_id, jobs, 'processing', 70, 'Searching for relevant content...')
-        texts = [s['text'] for s in sentence_segments]
-        embeddings = model.encode(
-            texts, batch_size=64,
-            normalize_embeddings=True,  # IMPORTANT
-            show_progress_bar=False
-        ).astype("float32")
-        query_vec  = model.encode([clean_query], normalize_embeddings=True).astype('float32')
-        index = faiss.IndexFlatIP(embeddings.shape[1])
-        index.add(embeddings)
-        index_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}.index');
-        faiss.write_index(index, index_path)
+        desired_duration_minutes, clean_query = clean_query_for_search(query)
 
-        k_first_stage = min( max(100, int(len(texts)*0.2)), len(texts) )
+        # We still need the model to embed the query; cheap vs. encoding all sentences
+        model = SentenceTransformer(EMBEDDING_MODEL)
+        query_vec = model.encode([clean_query], normalize_embeddings=True).astype('float32')
+
+        k_first_stage = min(max(100, int(len(texts)*0.2)), len(texts))
         distances, indices = index.search(query_vec, k_first_stage)
         similarity_scores = distances[0]
         cand_ids = indices[0]
@@ -1078,14 +1410,15 @@ def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
 
         update_job_status(job_id, jobs, 'processing', 90, 'Selecting best sequences...')
         selected_sequences = knapsack_selection(scored_sequences, target_duration)
-        if not selected_sequences: selected_sequences = sorted(scored_sequences, key=lambda x: x['value'], reverse=True)[:5]
+        if not selected_sequences:
+            selected_sequences = sorted(scored_sequences, key=lambda x: x['value'], reverse=True)[:5]
 
-        # Final playlist construction
         playlist = [{"start": seq['start'], "end": seq['end'], "narrative_reason": seq['narrative_reason']} for seq in selected_sequences]
-        if not playlist: raise ValueError("Narrative Engine failed to produce a playlist.")
+        if not playlist:
+            raise ValueError("Narrative Engine failed to produce a playlist.")
 
-        narration_url = None # Narration disabled for now
-        
+        narration_url = None  # Narration disabled for now
+
         result_data = {"video_id": video_id, "playlist": playlist, "narration_url": narration_url}
         jobs[job_id] = {'status': 'completed', 'progress': 100, 'message': 'Processing complete!', 'result': result_data}
 
@@ -1095,6 +1428,102 @@ def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
     finally:
         if 'audio_path' in locals() and os.path.exists(audio_path):
             os.remove(audio_path)
+
+
+# --- Main Pipeline & Q&A Functions ---
+
+# def process_audio_pipeline(youtube_url, query, job_id, jobs, with_narration):
+#     """The new, audio-first main pipeline."""
+#     try:
+#         update_job_status(job_id, jobs, 'processing', 10, 'Extracting audio...')
+#         audio_path, _, video_id = download_audio(youtube_url, job_id)
+
+#        ## update_job_status(job_id, jobs, 'processing', 25, 'Identifying speakers...')
+#        ## diarization = run_diarization(audio_path)
+
+# ##        update_job_status(job_id, jobs, 'processing', 50, 'Transcribing and aligning...')
+# ##        whisperx_segments = run_transcription_and_alignment(audio_path, diarization)
+
+#         ## update_job_status(job_id, jobs, 'processing', 60, 'Structuring transcript...')
+#         ## sentence_segments = create_speaker_aware_sentences(whisperx_segments)
+        
+#         update_job_status(job_id, jobs, 'processing', 40, 'Transcribing (Deepgram)...')
+#         dg_resp = transcribe_file_via_deepgram(audio_path, model="nova-3", diarize=True)
+
+
+#         update_job_status(job_id, jobs, "processing", 65, "Building sentence segments...")
+#         sentence_segments = deepgram_to_sentence_segments(dg_resp)
+    
+#         for i, seg in enumerate(sentence_segments): seg['original_index'] = i
+#         full_transcript_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}_full_transcript.txt')
+#         with open(full_transcript_path, 'w', encoding='utf-8') as f: f.write("\n".join([s['text'] for s in sentence_segments]))
+        
+#        # 65% — build sentence embeddings & FAISS index first (query-independent)
+#         update_job_status(job_id, jobs, 'processing', 65, 'Embedding transcript...')
+#         model = SentenceTransformer(EMBEDDING_MODEL)
+
+#         texts = [s['text'] for s in sentence_segments]
+#         embeddings = model.encode(
+#             texts,
+#             batch_size=64,
+#             normalize_embeddings=True,  # IMPORTANT: IP == cosine later
+#             show_progress_bar=False
+#         ).astype('float32')
+
+#         index = faiss.IndexFlatIP(embeddings.shape[1])
+#         index.add(embeddings)
+
+#         index_path = os.path.join(JOB_DATA_FOLDER, f'{job_id}.index')
+#         faiss.write_index(index, index_path)
+
+#         # 70% — now do the query-dependent bits (cleaning + query embedding + search)
+#         update_job_status(job_id, jobs, 'processing', 70, 'Searching for relevant content...')
+#         desired_duration_minutes, clean_query = clean_query_for_search(query)
+
+#         query_vec = model.encode([clean_query], normalize_embeddings=True).astype('float32')
+
+#         k_first_stage = min( max(100, int(len(texts)*0.2)), len(texts) )
+#         distances, indices = index.search(query_vec, k_first_stage)
+#         similarity_scores = distances[0]
+#         cand_ids = indices[0]
+#         mu, sigma = float(similarity_scores.mean()), float(similarity_scores.std())
+#         cut = max(mu - 0.25*sigma, 0.15)  # gentle floor
+#         relevant_ids = [i for i, s in zip(cand_ids, similarity_scores) if s >= cut]
+#         relevant_indices_set = set(relevant_ids)
+
+#         update_job_status(job_id, jobs, 'processing', 75, 'Identifying key sequences...')
+#         sequences = identify_sequences(sentence_segments, relevant_indices_set)
+
+#         update_job_status(job_id, jobs, 'processing', 80, 'Generating reasons for diversity ranking...')
+#         sequences_with_reasons = generate_narrative_reasons_batch(clean_query, sequences)
+#         diversity_scores = calculate_diversity_scores(sequences_with_reasons, model)
+#         score_by_id = {doc_id: sim for doc_id, sim in zip(cand_ids, similarity_scores)}
+#         scored_sequences = score_sequences(sequences_with_reasons, score_by_id, diversity_scores)
+
+#         if desired_duration_minutes == 0:
+#             desired_duration_minutes = None
+#         update_job_status(job_id, jobs, 'processing', 85, 'Inferring optimal duration...')
+#         target_duration = infer_duration(query) if not desired_duration_minutes else desired_duration_minutes * 60
+
+#         update_job_status(job_id, jobs, 'processing', 90, 'Selecting best sequences...')
+#         selected_sequences = knapsack_selection(scored_sequences, target_duration)
+#         if not selected_sequences: selected_sequences = sorted(scored_sequences, key=lambda x: x['value'], reverse=True)[:5]
+
+#         # Final playlist construction
+#         playlist = [{"start": seq['start'], "end": seq['end'], "narrative_reason": seq['narrative_reason']} for seq in selected_sequences]
+#         if not playlist: raise ValueError("Narrative Engine failed to produce a playlist.")
+
+#         narration_url = None # Narration disabled for now
+        
+#         result_data = {"video_id": video_id, "playlist": playlist, "narration_url": narration_url}
+#         jobs[job_id] = {'status': 'completed', 'progress': 100, 'message': 'Processing complete!', 'result': result_data}
+
+#     except Exception as e:
+#         print(f"Error in job {job_id}: {e}")
+#         jobs[job_id] = {'status': 'failed', 'progress': 100, 'message': str(e)}
+#     finally:
+#         if 'audio_path' in locals() and os.path.exists(audio_path):
+#             os.remove(audio_path)
 
 def answer_question_from_video(question, job_id):
     """Answers a user's question using the pre-processed video data."""
