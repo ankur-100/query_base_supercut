@@ -1,5 +1,9 @@
 # 🚀 AI Video Supercut Generator
 
+
+
+Latest Update branch seq.  Local>PS>@ dev_base> ( main -  older state )
+
 This document provides a complete overview of the **AI Video Supercut Generator**, an AI-powered application that generates “supercuts” from long-form videos based on a user's natural language query.  
 It details the current architecture, the strategic roadmap for future enhancements, and the project's version history.
 
